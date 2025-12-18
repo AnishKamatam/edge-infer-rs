@@ -1,1 +1,14 @@
-/target
+# Rust
+target/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Models
+model/*.onnx
+model/*.onnx.data
+
+# OS
+.DS_Store
