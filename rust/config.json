@@ -1,0 +1,37 @@
+{
+  "models": [
+    {
+      "name": "mobilenet",
+      "path": "../model/mobilenet_v2.onnx",
+      "input_node": "input",
+      "output_node": "output",
+      "max_batch": 8,
+      "timeout_ms": 50,
+      "channels": 3,
+      "height": 224,
+      "width": 224
+    },
+    {
+      "name": "resnet",
+      "path": "../model/resnet50.onnx",
+      "input_node": "input",
+      "output_node": "output",
+      "max_batch": 4,
+      "timeout_ms": 100,
+      "channels": 3,
+      "height": 224,
+      "width": 224
+    },
+    {
+      "name": "efficientnet",
+      "path": "../model/efficientnet_b0.onnx",
+      "input_node": "input",
+      "output_node": "output",
+      "max_batch": 8,
+      "timeout_ms": 50,
+      "channels": 3,
+      "height": 224,
+      "width": 224
+    }
+  ]
+}

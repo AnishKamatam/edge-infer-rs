@@ -1,41 +1,48 @@
-use ort::session::{Session, builder::GraphOptimizationLevel};
+use crate::backend::ModelBackend;
+use ort::session::Session;
 use ort::value::Value;
 use ndarray::Array4;
 use std::error::Error;
-use std::path::Path;
 
-pub struct InferenceEngine {
+pub struct OnnxBackend {
     session: Session,
-    input_node_name: String,
-    output_node_name: String,
+    input_node: String,
 }
 
-impl InferenceEngine {
-    pub fn new(
-        model_path: impl AsRef<Path>,
-        input_name: &str,
-        output_name: &str,
-    ) -> Result<Self, Box<dyn Error>> {
+impl OnnxBackend {
+    pub fn new(path: &str, input_node: &str, _output_node: &str) -> Result<Self, Box<dyn Error>> {
         let session = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(1)? 
-            .commit_from_file(&model_path)?;
-
+            .commit_from_file(path)?;
+        
         Ok(Self {
             session,
-            input_node_name: input_name.to_string(),
-            output_node_name: output_name.to_string(),
+            input_node: input_node.to_string(),
         })
     }
+}
 
-    pub fn run_batch(&mut self, input: Array4<f32>) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
+impl ModelBackend for OnnxBackend {
+    fn name(&self) -> &str { "ONNXRuntime-v2.0-rc" }
+
+    fn run_batch(&mut self, input: Array4<f32>) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
         let shape = input.shape().to_vec();
-        let data = input.into_raw_vec();
-        let input_tensor = Value::from_array((shape, data))?;
-        let outputs = self.session.run(ort::inputs![self.input_node_name.as_str() => input_tensor])?;
-        let (out_shape, data_slice) = outputs[self.output_node_name.as_str()].try_extract_tensor::<f32>()?;
-        let num_classes = out_shape[1] as usize;
+        let flat_data = input.into_raw_vec();
+        let value = Value::from_array((shape, flat_data))?;
         
-        Ok(data_slice.chunks(num_classes).map(|chunk| chunk.to_vec()).collect())
+        let outputs = self.session.run(vec![(self.input_node.as_str(), value)])?;
+        let (out_shape, out_data) = outputs[0].try_extract_tensor::<f32>()?;
+        
+        let batch_size = out_shape[0] as usize;
+        let total_elements = out_data.len();
+        let elements_per_batch = total_elements / batch_size;
+        
+        let mut results = Vec::with_capacity(batch_size);
+        for i in 0..batch_size {
+            let start = i * elements_per_batch;
+            let end = start + elements_per_batch;
+            results.push(out_data[start..end].to_vec());
+        }
+        
+        Ok(results)
     }
 }

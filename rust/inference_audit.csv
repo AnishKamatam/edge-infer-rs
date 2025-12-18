@@ -1,0 +1,16 @@
+model,image,label,confidence,latency_ms
+resnet,test.png,golden retriever,0.7844,121
+mobilenet,test.png,golden retriever,0.7918,56
+efficientnet,test.png,golden retriever,0.9280,61
+resnet,test1.png,sports car,0.5778,116
+mobilenet,test1.png,sports car,0.3865,56
+efficientnet,test1.png,sports car,0.6683,61
+resnet,test2.png,folding chair,0.8292,115
+mobilenet,test2.png,rocking chair,0.6551,55
+efficientnet,test2.png,folding chair,0.6751,61
+resnet,test3.png,water bottle,0.4709,116
+mobilenet,test3.png,water bottle,0.2610,55
+efficientnet,test3.png,water bottle,0.3384,61
+resnet,test4.png,mountain bike,0.9736,115
+mobilenet,test4.png,mountain bike,0.7638,55
+efficientnet,test4.png,mountain bike,0.9162,60

@@ -2,90 +2,101 @@ mod engine;
 mod preprocess;
 mod scheduler;
 mod topk;
+mod backend;
+mod telemetry;
 
-use scheduler::{BatchScheduler, RawMetrics};
-use std::sync::{Arc, Barrier};
-use std::thread;
-use std::time::{Duration, Instant};
+use scheduler::{BatchScheduler, ModelSpec};
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
-fn find_file(name: &str) -> String {
-    if Path::new(name).exists() { name.to_string() } 
-    else { format!("../{}", name) }
+#[derive(Deserialize)]
+struct ModelConfig {
+    name: String, path: String, input_node: String, output_node: String,
+    max_batch: usize, timeout_ms: u64, channels: usize, height: usize, width: usize,
 }
 
-pub fn print_metrics_report(m: &RawMetrics, wall_time: Duration, total_reqs: usize) {
-    let mut infer = m.infer_durations.clone();
-    let mut total = m.total_latencies.clone();
-    if infer.is_empty() || total.is_empty() { return; }
-    
-    infer.sort();
-    total.sort();
+#[derive(Deserialize)]
+struct ServerConfig { models: Vec<ModelConfig> }
 
-    let p50 = total[total.len() / 2];
-    let p95 = total[(total.len() as f32 * 0.95) as usize];
-    let p99 = total[(total.len() as f32 * 0.99) as usize];
-
-    let avg_infer: Duration = infer.iter().sum::<Duration>() / infer.len() as u32;
-    let total_rps = total_reqs as f64 / wall_time.as_secs_f64();
-
-    println!("\n{}", "=".repeat(40));
-    println!("METRICS");
-    println!("{}", "-".repeat(40));
-    
-    println!("BATCH BEHAVIOR");
-    println!("  Avg Batch Size:  {:.2}", m.batch_sizes.iter().sum::<usize>() as f32 / m.batch_sizes.len() as f32);
-    println!("  Size-Triggered:  {} batches", m.size_triggered);
-    println!("  Time-Triggered:  {} batches", m.timeout_triggered);
-
-    println!("\nLATENCY (End-to-End)");
-    println!("  P50 (Median):    {:?}", p50);
-    println!("  P95 (Tail):      {:?}", p95);
-    println!("  P99 (Worst):     {:?}", p99);
-
-    println!("\nENGINE PERFORMANCE");
-    println!("  Avg Infer Time:  {:?}", avg_infer);
-    println!("  Scheduler Oh:    {:?}", p50.checked_sub(avg_infer).unwrap_or(Duration::ZERO));
-    println!("  System RPS:      {:.2} req/sec", total_rps);
-    
-    println!("{}\n", "=".repeat(40));
+struct InferenceServer {
+    models: HashMap<String, Arc<BatchScheduler>>,
+    labels: Vec<String>,
 }
 
-fn run_benchmark(total_reqs: usize) -> Result<(), Box<dyn std::error::Error>> {
-    let model_path = find_file("model/mobilenet_v2.onnx");
-    let image_path = find_file("assets/test.png");
-    
-    let scheduler = Arc::new(BatchScheduler::new(model_path, 8, 50)); 
-    let input_tensor = preprocess::load_image(&image_path)?;
-    
-    let num_clients = 50;
-    let reqs_per_client = total_reqs / num_clients;
-    let barrier = Arc::new(Barrier::new(num_clients + 1));
-    let mut handles = vec![];
+impl InferenceServer {
+    fn from_config(config_path: &str) -> Self {
+        let config_str = fs::read_to_string(config_path).expect("Unable to read config.json");
+        let config: ServerConfig = serde_json::from_str(&config_str).expect("JSON error");
+        let labels = topk::load_labels("labels.txt");
+        let mut server = Self { models: HashMap::new(), labels };
 
-    for _ in 0..num_clients {
-        let sc = Arc::clone(&scheduler);
-        let img = input_tensor.clone();
-        let b = Arc::clone(&barrier);
-        handles.push(thread::spawn(move || {
-            b.wait(); 
-            for _ in 0..reqs_per_client { sc.predict(img.clone()); }
-        }));
+        for cfg in config.models {
+            if !Path::new(&cfg.path).exists() { continue; }
+            println!("BOOTING: [{}]", cfg.name);
+            let spec = ModelSpec {
+                name: cfg.name.clone(), path: cfg.path, input_node: cfg.input_node,
+                output_node: cfg.output_node, max_batch: cfg.max_batch, timeout_ms: cfg.timeout_ms,
+                channels: cfg.channels, height: cfg.height, width: cfg.width,
+            };
+            server.models.insert(cfg.name, Arc::new(BatchScheduler::new(spec)));
+        }
+        server
     }
-
-    let start_time = Instant::now();
-    barrier.wait(); 
-    for h in handles { h.join().unwrap(); }
-    let wall_time = start_time.elapsed();
-
-    let metrics = scheduler.metrics.lock().unwrap().clone();
-    print_metrics_report(&metrics, wall_time, total_reqs);
-
-    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Starting system benchmark...");
-    run_benchmark(2000)?;
+    let server = Arc::new(InferenceServer::from_config("config.json"));
+    let image_names = ["test.png", "test1.png", "test2.png", "test3.png", "test4.png"];
+    let mut test_images = Vec::new();
+
+    for name in image_names {
+        let path = format!("../assets/{}", name);
+        if Path::new(&path).exists() {
+            test_images.push((name.to_string(), preprocess::load_image(&path)?));
+        }
+    }
+
+    if test_images.is_empty() {
+        println!("No images found in ../assets/. Please check the folder.");
+        return Ok(());
+    }
+
+    println!("\nRUNNING THOROUGH ML AUDIT...");
+    let separator = "=".repeat(75);
+    println!("{}", separator);
+    println!("{:<12} | {:<12} | {:<20} | {:<10}", "MODEL", "IMAGE", "PREDICTION", "CONF %");
+    println!("{}", "-".repeat(75));
+
+    for (img_name, img_data) in &test_images {
+        for model_key in ["resnet", "mobilenet", "efficientnet"] {
+            if let Some(sched) = server.models.get(model_key) {
+                let start = Instant::now();
+                let results = sched.predict(img_data.clone());
+                let latency = start.elapsed();
+
+                let top = topk::get_top_results(&results, 1, &server.labels);
+                if let Some((label, prob)) = top.first() {
+                    println!(
+                        "{:<12} | {:<12} | {:<20} | {:.2}%", 
+                        model_key.to_uppercase(), img_name, label, prob * 100.0
+                    );
+
+                    telemetry::log_inference(telemetry::TelemetryRecord {
+                        model: model_key.to_string(),
+                        image: img_name.to_string(),
+                        label: label.to_string(),
+                        confidence: *prob,
+                        latency,
+                    });
+                }
+            }
+        }
+    }
+    println!("{}\n[Audit complete. Results saved to inference_audit.csv]", separator);
+
     Ok(())
 }
