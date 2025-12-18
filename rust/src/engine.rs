@@ -1,5 +1,4 @@
 use ort::session::{Session, builder::GraphOptimizationLevel};
-use ort::execution_providers::CoreMLExecutionProvider;
 use ort::value::Value;
 use ndarray::Array4;
 use std::error::Error;
@@ -12,7 +11,6 @@ pub struct InferenceEngine {
 }
 
 impl InferenceEngine {
-    /// Loads ONNX model with optimization and CoreML execution provider
     pub fn new(
         model_path: impl AsRef<Path>,
         input_name: &str,
@@ -20,8 +18,8 @@ impl InferenceEngine {
     ) -> Result<Self, Box<dyn Error>> {
         let session = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers([CoreMLExecutionProvider::default().build()])?
-            .commit_from_file(model_path)?;
+            .with_intra_threads(1)? 
+            .commit_from_file(&model_path)?;
 
         Ok(Self {
             session,
@@ -30,16 +28,14 @@ impl InferenceEngine {
         })
     }
 
-    /// Runs inference on preprocessed input array
-    pub fn run(&mut self, input: Array4<f32>) -> Result<Vec<f32>, Box<dyn Error>> {
+    pub fn run_batch(&mut self, input: Array4<f32>) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
         let shape = input.shape().to_vec();
         let data = input.into_raw_vec();
         let input_tensor = Value::from_array((shape, data))?;
-        
         let outputs = self.session.run(ort::inputs![self.input_node_name.as_str() => input_tensor])?;
-        let (_shape, data_slice) = outputs[self.output_node_name.as_str()]
-            .try_extract_tensor::<f32>()?;
-
-        Ok(data_slice.to_vec())
+        let (out_shape, data_slice) = outputs[self.output_node_name.as_str()].try_extract_tensor::<f32>()?;
+        let num_classes = out_shape[1] as usize;
+        
+        Ok(data_slice.chunks(num_classes).map(|chunk| chunk.to_vec()).collect())
     }
 }
