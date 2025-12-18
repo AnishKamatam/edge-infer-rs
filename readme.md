@@ -1,65 +1,149 @@
-# Edge-Infer-RS
+# Edge-Infer-RS: High-Performance Inference Framework
 
-A high-performance, asynchronous batching inference engine for **MobileNetV2**, built in Rust using **ONNX Runtime**. This project demonstrates an efficient bridge between high-frequency request streams and hardware-constrained deep learning models through dynamic batching and lock-aware scheduling.
-
-
-
-## Performance Metrics (Apple M-Series)
-
-The following metrics were captured on a MacBook Pro during a saturation test of **2,000 concurrent requests** distributed across **50 parallel client threads**.
-
-| Metric | Result |
-| :--- | :--- |
-| **Throughput** | **56.27 req/sec** |
-| **P50 Latency (Median)** | **166.81 ms** |
-| **P99 Latency (Worst)** | **178.88 ms** |
-| **Avg. Engine Infer Time** | **87.63 ms (per batch of 8)** |
-| **Batch Saturation** | **99.6% (Size-Triggered)** |
-
-### Analysis
-* **Tail Latency Stability**: The P50 and P99 are separated by only **12ms**. This indicates an extremely stable scheduler with minimal jitter and no significant thread contention.
-* **Batching Efficiency**: Out of 250 processed batches, **249 were filled to capacity (8/8)**. This confirms that the producer-consumer bridge is tuned for maximum hardware utilization.
-* **Hardware Alignment**: By using **4 parallel workers**, the engine saturates the Performance cores of the Apple Silicon chip, achieving approximately 11ms per-image inference within the batch.
+**Edge-Infer-RS** is a production-grade, trait-abstracted batching inference engine built in Rust. It provides a high-throughput bridge between asynchronous request streams and hardware-accelerated deep learning runtimes, with a focus on low-latency, CPU-efficient execution at the edge.
 
 ---
 
 ## Technical Architecture
 
-### 1. Dynamic Batching Scheduler
-The `BatchScheduler` balances throughput and latency by grouping individual requests into batches based on two specific triggers:
-* **Size Trigger**: Execution is forced once the batch reaches **8 requests**.
-* **Time Trigger**: Execution is forced after **50ms**, ensuring that low-traffic periods do not lead to indefinite latency.
+### 1. Multi-Backend Abstraction
 
+The system uses a **trait-based runtime abstraction** to decouple scheduling logic from model execution. By implementing the `ModelBackend` trait, different inference runtimes can be swapped without modifying the core scheduler.
 
+Supported / planned backends:
+- ONNX Runtime
+- LibTorch
+- TensorRT
 
-### 2. High-Concurrency Client Pool
-To simulate real-world production load, the benchmark uses a **Synchronized Barrier** to release 50 threads simultaneously. This tests the system's ability to handle burst traffic scenarios without crashing or deadlocking.
+This design mirrors production inference systems by separating the **control plane** (batching, scheduling, metrics) from the **execution plane** (kernel runtime).
 
-### 3. Lock-Aware Design
-The implementation utilizes a **Lock-Receive-Unlock** pattern with `std::sync::mpsc`. By minimizing the duration worker threads hold Mutexes, the system prevents lock convoys, allowing producers to push data even while workers are processing heavy inference tasks.
+---
+
+### 2. Dynamic Batching Scheduler
+
+The scheduler maximizes hardware utilization while respecting latency SLAs through two execution triggers:
+
+- **Size Trigger**  
+  Inference executes immediately when the batch reaches `max_batch` (e.g., 8), maximizing throughput under high load.
+
+- **Time Trigger**  
+  Inference executes after `timeout_ms` (e.g., 50 ms) if the batch is not full, ensuring bounded latency during low-traffic periods.
+
+This dual-trigger mechanism enables stable tail latency while maintaining near-optimal batch saturation.
+
+---
+
+### 3. Numerical Integrity & Preprocessing
+
+To ensure correctness and comparability with industry benchmarks, the engine implements standard vision preprocessing and postprocessing pipelines:
+
+- **Input Normalization**  
+  Applies ImageNet normalization:  
+  `mean = [0.485, 0.456, 0.406]`  
+  `std  = [0.229, 0.224, 0.225]`
+
+- **Probability Distribution**  
+  Uses a numerically stable Softmax implementation to convert raw logits into calibrated confidence scores.
+
+---
+
+## Performance Metrics (Apple M-Series)
+
+Metrics captured during a saturation test of **2,000 concurrent requests** distributed across **50 parallel threads**.
+
+| Metric                         | Result                     |
+|--------------------------------|----------------------------|
+| Throughput                     | 56.27 req/sec              |
+| P50 Latency (Median)           | 166.81 ms                  |
+| P99 Latency (Worst)            | 178.88 ms                  |
+| Avg. Engine Infer Time         | 87.63 ms (per batch of 8)  |
+| Batch Saturation               | 99.6% (Size-Triggered)     |
+
+---
+
+## Performance Analysis
+
+- **Tail Latency Stability**  
+  The P99–P50 delta is only **12 ms**, indicating a highly stable scheduler with minimal contention and predictable execution behavior.
+
+- **Hardware Alignment**  
+  The worker pool effectively saturates the Apple ARM performance cores, achieving approximately **11 ms per image** when executed within a full batch.
+
+---
+
+## Features
+
+### Inference Telemetry & Auditing
+
+Every inference request is logged to `inference_audit.csv`, enabling:
+
+- **Model Drift Detection**  
+  Monitoring confidence score degradation over time.
+- **Latency Auditing**  
+  Evaluating performance under varying load conditions.
+- **Cross-Model Verification**  
+  Comparing predictions across models (e.g., ResNet vs. MobileNet) for identical inputs.
 
 ---
 
 ## Technical Stack
-* **Runtime**: [ONNX Runtime (ort)](https://github.com/pykeio/ort)
-* **Math/Tensors**: `ndarray`
-* **Concurrency**: Rust Standard Library (`mpsc`, `Arc`, `Mutex`, `Barrier`)
-* **Model**: MobileNetV2 (ImageNet classification)
+
+- **Runtime:** ONNX Runtime (`ort` 2.0-rc)
+- **Math / Tensors:** `ndarray`
+- **Serialization:** `serde`, `serde_json`
+- **Vision:** `image` (Lanczos3 resampling)
+- **Concurrency:** `std::sync` (`mpsc`, `Arc`, `Mutex`, `Barrier`)
+
+---
 
 ## Usage
 
-### Run the Benchmark
+### 1. Configuration
+
+Define models and batching constraints in `config.json`:
+
+```json
+{
+  "models": [
+    {
+      "name": "mobilenet",
+      "path": "../model/mobilenet_v2.onnx",
+      "input_node": "input",
+      "output_node": "output",
+      "max_batch": 8,
+      "timeout_ms": 50,
+      "channels": 3,
+      "height": 224,
+      "width": 224
+    },
+    {
+      "name": "resnet",
+      "path": "../model/resnet50.onnx",
+      "input_node": "input",
+      "output_node": "output",
+      "max_batch": 4,
+      "timeout_ms": 100,
+      "channels": 3,
+      "height": 224,
+      "width": 224
+    },
+    {
+      "name": "efficientnet",
+      "path": "../model/efficientnet_b0.onnx",
+      "input_node": "input",
+      "output_node": "output",
+      "max_batch": 8,
+      "timeout_ms": 50,
+      "channels": 3,
+      "height": 224,
+      "width": 224
+    }
+  ]
+}
+
+## 2. Execution
+
+Run the full ML audit and performance benchmark:
+
 ```bash
 cargo run --release
-
-
-| Category | Metric | Value |
-|--------|-------|------|
-| **Batching** | Avg Batch Size | 8.00 |
-|  | Size-Triggered Batches | 249 |
-|  | Time-Triggered Batches | 1 |
-| **Latency** | P50 End-to-End | 166.80 ms |
-|  | P99 End-to-End | 178.87 ms |
-| **Performance** | Avg Inference Time (batch) | 87.62 ms |
-|  | Scheduler Overhead | 79.18 ms |
-|  | Sustained Throughput | 56.27 req/s |
