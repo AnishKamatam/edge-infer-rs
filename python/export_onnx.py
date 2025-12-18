@@ -16,7 +16,7 @@ def main():
         opset_version=18,
     )
 
-    print("✅ Exported to model/mobilenet_v2.onnx")
+    print("Exported to model/mobilenet_v2.onnx")
 
 if __name__ == "__main__":
     main()
