@@ -5,10 +5,6 @@ import onnx
 import sys
 
 def get_weights_attr(model_name: str):
-    """
-    Search torchvision.models for the correct weights attribute.
-    e.g., searches for something that looks like 'MobileNet_V2_Weights'
-    """
     search_str = f"{model_name.replace('_', '')}_weights"
     for attr in dir(models):
         if attr.lower().replace('_', '') == search_str:
@@ -25,8 +21,7 @@ def export_model(model_name: str):
         # 2. Find and load the correct Weights
         attr_name = get_weights_attr(model_name)
         if not attr_name:
-            # Fallback for models that might not follow the _Weights pattern
-            print(f"⚠️  Could not find specific weights for {model_name}, trying default...")
+            print(f"Could not find specific weights for {model_name}, trying default...")
             model = model_fn(pretrained=True)
         else:
             weights_enum = getattr(models, attr_name)
@@ -34,7 +29,7 @@ def export_model(model_name: str):
             print(f"Successfully loaded {model_name} using {attr_name}.DEFAULT")
             
     except Exception as e:
-        print(f"❌ Error loading model '{model_name}': {e}")
+        print(f"Error loading model '{model_name}': {e}")
         return
 
     model.eval()
@@ -79,7 +74,7 @@ def export_model(model_name: str):
         os.remove(data_file)
     
     size = os.path.getsize(output_path) / (1024 * 1024)
-    print(f"✅ SUCCESS: {model_name}.onnx created ({size:.2f} MB)\n")
+    print(f"SUCCESS: {model_name}.onnx created ({size:.2f} MB)\n")
 
 if __name__ == "__main__":
     targets = sys.argv[1:] if len(sys.argv) > 1 else ["mobilenet_v2"]
